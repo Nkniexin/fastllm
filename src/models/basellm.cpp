@@ -223,9 +223,14 @@ namespace fastllm {
         FillLLMInputs(inputTokens, {{"promptLen", promptLen}, {"index", index}, {"add_special_tokens", add_special_tokens}},
                       inputIds, attentionMask, positionIds);
         ToDataType(attentionMask, this->dataType);
+        int now = 0;
         while (true) {
             auto st = std::chrono::system_clock::now();
             int ret = Forward(inputIds, attentionMask, positionIds, pastKeyValues, generationConfig, tokens);        
+            now ++;
+            if(now ==1){
+                exit(-1);
+            }
             tokens.units[0].Push(ret);
             if (ret == eos_token_id
                 || generationConfig.stop_token_ids.find(ret) != generationConfig.stop_token_ids.end()

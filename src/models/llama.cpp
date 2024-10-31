@@ -262,15 +262,25 @@ namespace fastllm {
         Data w1, w2, w3;
         Data* sinDataPtr = &sinData;
         Data* cosDataPtr = &cosData;
-
+        auto st = std::chrono::steady_clock::now();
         Embedding(inputIds, this->weight["model.embed_tokens.weight"], hiddenStates);
+        auto et = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed_pre_rms = et - st;
+
+        std::cout <<" embedding Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
         ToDataType(hiddenStates, this->dataType);
 
         int seqlen = hiddenStates.dims[1];
         for (int i = 0; i < block_cnt; i++) {
             ApplyDeviceMap(this->deviceMap, i + 1, block_cnt);
+            st = std::chrono::steady_clock::now();
             RMSNorm(hiddenStates, this->weight["model.layers." + std::to_string(i) + ".input_layernorm.weight"],
                     rms_norm_eps, attenInput);
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   rmsnorm1 Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
             std::string qWeightName = "model.layers." + std::to_string(i) + ".self_attn.q_proj.weight";
             std::string qBiasName = "model.layers." + std::to_string(i) + ".self_attn.q_proj.bias";
             std::string kWeightName = "model.layers." + std::to_string(i) + ".self_attn.k_proj.weight";
@@ -284,6 +294,8 @@ namespace fastllm {
             std::string mergeQkvBiasName = "model.layers." + std::to_string(i) + ".self_attn.mergeqkv.bias";
 
             // 1.1 Get q, k, v
+
+            st = std::chrono::steady_clock::now();
             int bsz = attenInput.dims[0], seqlen = attenInput.dims[1];
             if (weight.weight.find(qkvWeightName) != weight.weight.end()) {
                 Linear(attenInput, weight[qkvWeightName], Data(), qkv);
@@ -311,6 +323,9 @@ namespace fastllm {
                 }
             }
 
+            
+
+
             std::vector <int> qkvSize = {bsz, seqlen, -1, head_dim};
             q.Reshape(qkvSize);
             k.Reshape(qkvSize);
@@ -332,11 +347,14 @@ namespace fastllm {
                 sinDataPtr = new Data(DataType::FLOAT32, {(int)this->sin.size(), (int)this->sin[0].size()}, pair.first);
                 cosDataPtr = new Data(DataType::FLOAT32, {(int)this->cos.size(), (int)this->cos[0].size()}, pair.second);
             }
-
             if (alibiData.dims.size() == 0) {
                 fastllm::LlamaRotatePosition2D(q, positionIds, *sinDataPtr, *cosDataPtr, rotary_dim);
                 fastllm::LlamaRotatePosition2D(k, positionIds, *sinDataPtr, *cosDataPtr, rotary_dim);
             }
+
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   qkv + rotary Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
 
             PermuteSelf(q, {0, 2, 1, 3});
             PermuteSelf(k, {0, 2, 1, 3});
@@ -379,6 +397,7 @@ namespace fastllm {
 
             // 1.2 Attention
             // 1.2.0 q * k^T
+            st = std::chrono::steady_clock::now();
             if (alibiData.dims.size() == 0) {
                 Attention(q, pastKey, pastValue, attentionMask, qkv, q.dims[0] / pastKey.dims[0], 1.0 / sqrt(head_dim), 1);
             } else {
@@ -401,11 +420,29 @@ namespace fastllm {
             qkv.Reshape({seqlen, bsz, -1});
             PermuteSelf(qkv, {1, 0, 2});
 
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   attention Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
+
             Data oBias = (weight.weight.find(oBiasName) != weight.weight.end()) ? weight[oBiasName] : Data();
+
+            st = std::chrono::steady_clock::now();
             Linear(qkv, weight[oWeightName], oBias, attenInput);
+
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   attention out Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
             AddTo(hiddenStates, attenInput);
             // 2. mlp
+            st = std::chrono::steady_clock::now();
             RMSNorm(hiddenStates, this->weight["model.layers." + std::to_string(i) + ".post_attention_layernorm.weight"], rms_norm_eps, attenInput);
+
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   rmsnorm2 Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
+            st = std::chrono::steady_clock::now();
             if (this->mergeSwiglu) {
                 std::string swigluWeightName = "model.layers." + std::to_string(i) + ".mlp.gateup_proj.weight";
                 if (CanRunLinearEx(LinearExType::ExSwiglu)) {
@@ -424,7 +461,18 @@ namespace fastllm {
                 Linear(attenInput, weight["model.layers." + std::to_string(i) + ".mlp.up_proj.weight"], Data(), v);
                 MulTo(q, v);
             }
+
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   ffn1 + Gated_silu Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
+            st = std::chrono::steady_clock::now();
             Linear(q, weight["model.layers." + std::to_string(i) + ".mlp.down_proj.weight"], Data(), k);
+
+            et = std::chrono::steady_clock::now();
+            elapsed_pre_rms = et - st;
+            std::cout <<"layer"<<i<<"   ffn2 Elapsed time: " << elapsed_pre_rms.count() << " seconds" << "\n" <<std::endl;
+
             AddTo(hiddenStates, k);
         }
 
